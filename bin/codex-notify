@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+payload="${1:-}"
+[ -n "$payload" ] || exit 0
+
+# JSONでなければ、そのまま送る
+if [[ "$payload" != \{* ]] || ! command -v jq >/dev/null 2>&1; then
+  msg="$payload"
+else
+  type="$(printf '%s' "$payload" | jq -r '."type" // ""' 2>/dev/null || true)"
+  if [[ "$type" != "agent-turn-complete" ]]; then
+    exit 0
+  fi
+
+  last_q="$(printf '%s' "$payload" | jq -r '."input-messages"[-1] // ""' 2>/dev/null || true)"
+  last_a="$(printf '%s' "$payload" | jq -r '."last-assistant-message" // ""' 2>/dev/null || true)"
+
+  cwd="$(printf '%s' "$payload" | jq -r '."cwd" // ""' 2>/dev/null || true)"
+  turn="$(printf '%s' "$payload" | jq -r '."turn-id" // ""' 2>/dev/null || true)"
+
+  ws=""
+  if [[ -n "$cwd" ]]; then ws="$(basename "$cwd")"; fi
+
+  header="Codex"
+  if [[ -n "$ws" || -n "$turn" ]]; then
+    header+=" (${ws}${ws:+ / }${turn:+turn $turn})"
+  fi
+
+  # ここが変更点：ヘッダー/Q/Aの間を「空行あり」にする
+  msg="${header}"$'\n\n'"Q: ${last_q}"$'\n\n'"A: ${last_a}"
+fi
+
+# 宛先が未設定なら静かに終了
+if [[ -z "${CODEX_NOTIFY_TO:-}" ]]; then
+  exit 0
+fi
+
+osascript - "$CODEX_NOTIFY_TO" "$msg" <<'EOF'
+on run argv
+  set theTo to item 1 of argv
+  set theMsg to item 2 of argv
+  tell application "Messages"
+    set svc to 1st service whose service type = iMessage
+    set b to buddy theTo of svc
+    send theMsg to b
+  end tell
+end run
+EOF

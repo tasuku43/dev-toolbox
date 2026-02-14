@@ -4,7 +4,7 @@ set -euo pipefail
 payload="${1:-}"
 [ -n "$payload" ] || exit 0
 
-# JSONでなければ、そのまま送る
+# If payload is not JSON, send it as-is.
 if [[ "$payload" != \{* ]] || ! command -v jq >/dev/null 2>&1; then
   msg="$payload"
 else
@@ -27,11 +27,11 @@ else
     header+=" (${ws}${ws:+ / }${turn:+turn $turn})"
   fi
 
-  # ここが変更点：ヘッダー/Q/Aの間を「空行あり」にする
+  # Format with blank lines between header, Q, and A for readability.
   msg="${header}"$'\n\n'"Q: ${last_q}"$'\n\n'"A: ${last_a}"
 fi
 
-# 宛先が未設定なら静かに終了
+# Exit quietly when the destination is not configured.
 if [[ -z "${CODEX_NOTIFY_TO:-}" ]]; then
   exit 0
 fi

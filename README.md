@@ -1,12 +1,44 @@
-# scripts
+# dev-toolbox
 
-自分用の bash スクリプトを管理するための最小構成リポジトリ。
+English | [日本語](README.ja.md)
 
-## 使い方
-- 実行: `./bin/<script>`
-- 必要なら PATH に `bin/` を追加してください。
+A lightweight repository for managing reusable developer tools.
 
-## 方針
-- macOS 前提 / bash 前提
-- スクリプトは `bin/` に直接配置
-- 追加の仕組みは必要になった時点で検討
+Instead of treating everything as a flat `bin/` directory, this repository
+organizes assets by tool. Each tool can include scripts, a Dockerfile, and
+tool-specific notes as needed.
+
+## Goals
+
+- Keep practical utility tools in one place
+- Organize by tool name, not by file type
+- Allow each tool to carry only what it needs
+
+## Directory layout
+
+```text
+tools/
+  codex-notify/
+    README.md
+    codex-notify
+  name-audit/
+    README.md
+    name_audit
+    Dockerfile
+```
+
+## Usage
+
+- `./tools/codex-notify/codex-notify "<payload>"`
+- `./tools/name-audit/name_audit <candidate...>`
+
+## Tool docs
+
+- `tools/codex-notify/README.md`
+- `tools/name-audit/README.md`
+
+## Conventions
+
+- One tool per directory under `tools/`
+- Keep executable entrypoints versioned in the tool directory
+- Add a `Dockerfile` only for tools that need a containerized runtime

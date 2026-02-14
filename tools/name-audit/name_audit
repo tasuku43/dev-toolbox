@@ -1,0 +1,606 @@
+#!/usr/bin/env bash
+# name_audit (bash 3.2 compatible; macOS default bash OK)
+#
+# What it does:
+# - PATH collision
+# - Homebrew exact name collision
+# - APT exact name collision (will SKIP on mac)
+# - npm: sandbox global install to temp prefix -> checks SAME-NAME bin
+#        + popularity (downloads last-week)
+# - PyPI: sandbox venv install -> checks SAME-NAME script
+#        + popularity (downloads last-month via pypistats)
+# - Final VERDICT: OK/WARN/FAIL with reasons
+#
+# Usage:
+#   ./name_audit hako koya kura
+#   ./name_audit --file candidates.txt
+#
+# Env:
+#   TIMEOUT_SECS=25
+#   KEEP_TMP=1
+#   NPM_FAIL_WEEKLY=1000
+#   PYPI_FAIL_MONTHLY=2000
+#   PYPI_RETRY_TIMEOUT_SECS=90
+
+set -euo pipefail
+
+TIMEOUT_SECS="${TIMEOUT_SECS:-25}"
+KEEP_TMP="${KEEP_TMP:-0}"
+NPM_FAIL_WEEKLY="${NPM_FAIL_WEEKLY:-1000}"
+PYPI_FAIL_MONTHLY="${PYPI_FAIL_MONTHLY:-2000}"
+PYPI_RETRY_TIMEOUT_SECS="${PYPI_RETRY_TIMEOUT_SECS:-90}"
+
+have() { command -v "$1" >/dev/null 2>&1; }
+
+run_timeout_with_secs() {
+  local secs="$1"
+  shift
+  if have timeout; then
+    timeout "${secs}" "$@" 2>/dev/null
+    return $?
+  elif have gtimeout; then
+    gtimeout "${secs}" "$@" 2>/dev/null
+    return $?
+  elif have python3; then
+    python3 - "$secs" "$@" 2>/dev/null <<'PY'
+import subprocess
+import sys
+
+timeout_secs = float(sys.argv[1])
+cmd = sys.argv[2:]
+if not cmd:
+    sys.exit(0)
+
+try:
+    completed = subprocess.run(cmd, timeout=timeout_secs)
+    sys.exit(completed.returncode)
+except subprocess.TimeoutExpired:
+    sys.exit(124)
+except Exception:
+    sys.exit(1)
+PY
+    return $?
+  else
+    "$@" 2>/dev/null
+    return $?
+  fi
+}
+
+run_timeout() {
+  run_timeout_with_secs "$TIMEOUT_SECS" "$@"
+}
+
+read_args() {
+  if [[ "${1:-}" == "--file" ]]; then
+    [[ -n "${2:-}" ]] || { echo "ERR: --file needs a path" >&2; exit 2; }
+    mapfile -t ARGS < <(grep -vE '^\s*#|^\s*$' "$2" | tr -d '\r')
+  else
+    ARGS=("$@")
+  fi
+}
+
+print_h1() { echo "== $1 =="; }
+
+print_line() {
+  local label="$1"; shift
+  local status="$1"; shift
+  if [[ "$#" -gt 0 ]]; then
+    echo "- ${label}: ${status} ($*)"
+  else
+    echo "- ${label}: ${status}"
+  fi
+}
+
+mktempdir() {
+  if have mktemp; then
+    mktemp -d 2>/dev/null || mktemp -d -t name_audit
+  else
+    local d="/tmp/name_audit.$$.$RANDOM"
+    mkdir -p "$d"
+    echo "$d"
+  fi
+}
+
+cleanup_dir() {
+  local d="$1"
+  [[ "$KEEP_TMP" == "1" ]] && return 0
+  rm -rf "$d" >/dev/null 2>&1 || true
+}
+
+list_bins_in_dir() {
+  local bindir="$1"
+  if [[ -d "$bindir" ]]; then
+    (cd "$bindir" && ls -1 2>/dev/null | sed '/^\s*$/d') || true
+  fi
+}
+
+# Globals per-name
+VERDICT="OK"
+REASONS=()
+
+set_verdict() {
+  # FAIL > WARN > OK
+  local new="$1"
+  case "$VERDICT" in
+    FAIL) return 0 ;;
+    WARN) [[ "$new" == "FAIL" ]] && VERDICT="FAIL" ;;
+    OK)   [[ "$new" == "WARN" || "$new" == "FAIL" ]] && VERDICT="$new" ;;
+    *)    VERDICT="$new" ;;
+  esac
+}
+
+add_reason() { REASONS+=("$1"); }
+
+join_reasons() {
+  if [[ "${#REASONS[@]}" -eq 0 ]]; then
+    echo ""
+    return 0
+  fi
+
+  local out=""
+  local i
+  for i in "${REASONS[@]}"; do
+    if [[ -z "$out" ]]; then
+      out="$i"
+    else
+      out="${out}; $i"
+    fi
+  done
+  echo "$out"
+}
+
+# JSON helper using python3 (already required for venv)
+json_py_get_int() {
+  # reads json from stdin and prints int or empty
+  local expr="$1"
+  python3 -c 'import json,sys
+expr=sys.argv[1]
+s=sys.stdin.read()
+if not s:
+    print("")
+    raise SystemExit(0)
+try:
+    j=json.loads(s)
+except Exception:
+    print("")
+    raise SystemExit(0)
+try:
+    v=eval(expr, {"__builtins__": {}}, {"j": j})
+    if v is None:
+        print("")
+    elif isinstance(v,(int,float)):
+        print(int(v))
+    else:
+        try:
+            print(int(v))
+        except Exception:
+            print("")
+except Exception:
+    print("")
+' "$expr"
+}
+
+json_oneline() {
+  # reads json/text from stdin and prints a compact one-line representation
+  python3 -c 'import json,sys
+s=sys.stdin.read()
+if not s:
+    print("")
+    raise SystemExit(0)
+try:
+    obj=json.loads(s)
+    print(json.dumps(obj, ensure_ascii=False, separators=(",", ":")))
+except Exception:
+    print(" ".join(s.strip().split()))
+'
+}
+
+npm_bins_from_view_json() {
+  # reads npm view --json output from stdin and prints bin names (1 per line)
+  python3 -c 'import json,sys
+s=sys.stdin.read()
+if not s:
+    raise SystemExit(0)
+try:
+    j=json.loads(s)
+except Exception:
+    raise SystemExit(0)
+if isinstance(j, list):
+    if not j:
+        raise SystemExit(0)
+    j=j[-1]
+b=j.get("bin") if isinstance(j, dict) else None
+if isinstance(b, str):
+    print(b)
+elif isinstance(b, dict):
+    for k in b.keys():
+        print(k)
+'
+}
+
+npm_view_has_package() {
+  # reads npm view --json output from stdin, exits 0 when package metadata exists
+  python3 -c 'import json,sys
+s=sys.stdin.read()
+if not s:
+    raise SystemExit(1)
+try:
+    j=json.loads(s)
+except Exception:
+    raise SystemExit(1)
+if isinstance(j, list):
+    j=j[-1] if j else {}
+if isinstance(j, dict) and isinstance(j.get("error"), dict):
+    raise SystemExit(1)
+if isinstance(j, dict) and ("version" in j or "bin" in j):
+    raise SystemExit(0)
+raise SystemExit(1)
+'
+}
+
+npm_downloads_last_week() {
+  local pkg="$1"
+  have curl || { NPM_DL_LAST_WEEK=""; NPM_DL_RAW=""; return 0; }
+  local body
+  body="$(run_timeout curl -fsS "https://api.npmjs.org/downloads/point/last-week/${pkg}" || true)"
+  NPM_DL_RAW="$(echo "$body" | json_oneline)"
+  [[ -n "$body" ]] || { NPM_DL_LAST_WEEK=""; return 0; }
+  NPM_DL_LAST_WEEK="$(echo "$body" | json_py_get_int "j.get('downloads')")"
+}
+
+NPM_DL_LAST_WEEK=""
+NPM_DL_RAW=""
+NPM_VIEW_RAW=""
+PYPI_DL_LAST_MONTH=""
+PYPI_DL_RAW=""
+
+pypi_downloads_last_month() {
+  local pkg="$1"
+  have curl || { PYPI_DL_LAST_MONTH=""; PYPI_DL_RAW=""; return 0; }
+  local body
+  body="$(run_timeout curl -fsS "https://pypistats.org/api/packages/${pkg}/recent" || true)"
+  PYPI_DL_RAW="$(echo "$body" | json_oneline)"
+  [[ -n "$body" ]] || { PYPI_DL_LAST_MONTH=""; return 0; }
+  PYPI_DL_LAST_MONTH="$(echo "$body" | json_py_get_int "j.get('data',{}).get('last_month')")"
+}
+
+pypi_scripts_from_wheels_dir() {
+  # $1: directory containing downloaded wheel files
+  # prints console script names (1 per line)
+  local dist_dir="$1"
+  python3 - "$dist_dir" <<'PY'
+import configparser
+import io
+import pathlib
+import sys
+import zipfile
+
+dist_dir = pathlib.Path(sys.argv[1])
+seen = set()
+
+for whl in dist_dir.glob("*.whl"):
+    try:
+        with zipfile.ZipFile(whl) as zf:
+            ep_files = [n for n in zf.namelist() if n.endswith(".dist-info/entry_points.txt")]
+            for ep in ep_files:
+                data = zf.read(ep).decode("utf-8", errors="ignore")
+                cp = configparser.ConfigParser()
+                cp.read_file(io.StringIO(data))
+                if cp.has_section("console_scripts"):
+                    for key, _val in cp.items("console_scripts"):
+                        if key not in seen:
+                            seen.add(key)
+                            print(key)
+    except Exception:
+        continue
+PY
+}
+
+check_path() {
+  local name="$1"
+  if command -v "$name" >/dev/null 2>&1; then
+    print_line "PATH" "FOUND" "$(command -v "$name")"
+    set_verdict "WARN"
+    add_reason "PATH has existing '${name}'"
+  else
+    print_line "PATH" "OK" "not found"
+  fi
+}
+
+check_brew() {
+  local name="$1"
+  if ! have brew; then
+    print_line "Homebrew" "SKIP" "brew not installed"
+    return 0
+  fi
+
+  local out_f out_c hit_f="NO" hit_c="NO"
+
+  out_f="$(run_timeout brew search --formula "$name" || true)"
+  if [[ -n "$out_f" ]] && echo "$out_f" | awk -v n="$name" '$0==n{f=1} END{exit(f?0:1)}' >/dev/null 2>&1; then
+    hit_f="YES"
+  fi
+
+  out_c="$(run_timeout brew search --cask "$name" || true)"
+  if [[ -n "$out_c" ]] && echo "$out_c" | awk -v n="$name" '$0==n{f=1} END{exit(f?0:1)}' >/dev/null 2>&1; then
+    hit_c="YES"
+  fi
+
+  if [[ "$hit_f" == "YES" || "$hit_c" == "YES" ]]; then
+    print_line "Homebrew" "FOUND" "formula=${hit_f}, cask=${hit_c}"
+    set_verdict "FAIL"
+    add_reason "Homebrew exact match exists"
+  else
+    print_line "Homebrew" "OK" "no exact match (formula/cask)"
+  fi
+}
+
+check_apt() {
+  local name="$1"
+  if ! have apt-cache; then
+    print_line "APT" "SKIP" "apt-cache not installed (not Debian/Ubuntu?)"
+    return 0
+  fi
+
+  if run_timeout apt-cache show "$name" >/dev/null 2>&1; then
+    print_line "APT" "FOUND" "exact package name exists"
+    set_verdict "FAIL"
+    add_reason "APT exact package exists"
+  elif run_timeout apt-cache search --names-only "^${name}$" | awk -v n="$name" '$1==n{f=1} END{exit(f?0:1)}' >/dev/null 2>&1; then
+    print_line "APT" "FOUND" "exact name match via search"
+    set_verdict "FAIL"
+    add_reason "APT exact package exists (via search)"
+  else
+    print_line "APT" "OK" "no exact match"
+  fi
+}
+
+check_npm() {
+  local name="$1"
+  if ! have npm; then
+    print_line "npm" "SKIP" "npm not installed"
+    return 0
+  fi
+  if ! have curl; then
+    print_line "npm" "SKIP" "curl required for popularity probe"
+    return 0
+  fi
+
+  local tmp prefix bindir npm_cache rc bins same="NO" bins_from_view=""
+  tmp="$(mktempdir)"
+  prefix="${tmp}/prefix"
+  mkdir -p "$prefix"
+  bindir="${prefix}/bin"
+  npm_cache="${tmp}/npm-cache"
+  mkdir -p "$npm_cache"
+
+  local view_body
+  view_body="$(env npm_config_cache="$npm_cache" npm view "$name" version bin dist-tags --json 2>/dev/null || true)"
+  NPM_VIEW_RAW="$(echo "$view_body" | json_oneline)"
+  bins_from_view="$(echo "$view_body" | npm_bins_from_view_json || true)"
+
+  if [[ -z "$view_body" ]] || ! echo "$view_body" | npm_view_has_package >/dev/null 2>&1; then
+    print_line "npm" "OK" "package not found"
+    cleanup_dir "$tmp"
+    return 0
+  fi
+
+  rc=0
+  run_timeout env npm_config_cache="$npm_cache" npm install -g "$name" --prefix "$prefix" >/dev/null 2>&1 || rc=$?
+  if [[ $rc -ne 0 ]]; then
+    local dl_fallback
+    npm_downloads_last_week "$name"
+    dl_fallback="$NPM_DL_LAST_WEEK"
+    [[ -z "$dl_fallback" ]] && dl_fallback="unknown"
+    if [[ -n "$bins_from_view" ]]; then
+      if echo "$bins_from_view" | awk -v n="$name" '$0==n{f=1} END{exit(f?0:1)}' >/dev/null 2>&1; then
+        print_line "npm" "FOUND" "SAME-NAME bin '${name}' from npm metadata (install rc=${rc}); downloads_last_week=${dl_fallback}; bins_from_view=[$(echo "$bins_from_view" | tr '\n' ' ' | sed 's/ $//')]; downloads_api_raw=${NPM_DL_RAW:-none}; npm_view_raw=${NPM_VIEW_RAW:-none}"
+        if [[ "$dl_fallback" != "unknown" ]] && [[ "$dl_fallback" -ge "$NPM_FAIL_WEEKLY" ]]; then
+          set_verdict "FAIL"
+          add_reason "npm '${name}' creates same-name bin (popular: ${dl_fallback}/week; metadata)"
+        else
+          set_verdict "WARN"
+          add_reason "npm '${name}' creates same-name bin (low/unknown popularity: ${dl_fallback}/week; metadata)"
+        fi
+      else
+        print_line "npm" "FOUND" "package exists; no same-name bin '${name}' (metadata fallback; install rc=${rc}); downloads_last_week=${dl_fallback}; bins_from_view=[$(echo "$bins_from_view" | tr '\n' ' ' | sed 's/ $//')]; downloads_api_raw=${NPM_DL_RAW:-none}; npm_view_raw=${NPM_VIEW_RAW:-none}"
+      fi
+    else
+      if [[ $rc -eq 124 ]]; then
+        print_line "npm" "SKIP" "timeout installing into temp prefix and no bin metadata (TIMEOUT_SECS=${TIMEOUT_SECS}); npm_view_raw=${NPM_VIEW_RAW:-none}"
+      else
+        print_line "npm" "SKIP" "failed to install into temp prefix and no bin metadata (rc=${rc}); npm_view_raw=${NPM_VIEW_RAW:-none}"
+      fi
+    fi
+    cleanup_dir "$tmp"
+    return 0
+  fi
+
+  bins="$(list_bins_in_dir "$bindir")"
+  if [[ -z "$bins" ]]; then
+    local dl_no_bins
+    npm_downloads_last_week "$name"
+    dl_no_bins="$NPM_DL_LAST_WEEK"
+    [[ -z "$dl_no_bins" ]] && dl_no_bins="unknown"
+    print_line "npm" "FOUND" "package exists; install created no bins; downloads_last_week=${dl_no_bins}; downloads_api_raw=${NPM_DL_RAW:-none}; npm_view_raw=${NPM_VIEW_RAW:-none}"
+    cleanup_dir "$tmp"
+    return 0
+  fi
+
+  if echo "$bins" | awk -v n="$name" '$0==n{f=1} END{exit(f?0:1)}' >/dev/null 2>&1; then
+    same="YES"
+  fi
+
+  local dl
+  npm_downloads_last_week "$name"
+  dl="$NPM_DL_LAST_WEEK"
+  [[ -z "$dl" ]] && dl="unknown"
+
+  if [[ "$same" == "YES" ]]; then
+    print_line "npm" "FOUND" "SAME-NAME bin '${name}' created; downloads_last_week=${dl}; bins=[$(echo "$bins" | tr '\n' ' ' | sed 's/ $//')]; downloads_api_raw=${NPM_DL_RAW:-none}; npm_view_raw=${NPM_VIEW_RAW:-none}"
+    if [[ "$dl" != "unknown" ]] && [[ "$dl" -ge "$NPM_FAIL_WEEKLY" ]]; then
+      set_verdict "FAIL"
+      add_reason "npm '${name}' creates same-name bin (popular: ${dl}/week)"
+    else
+      set_verdict "WARN"
+      add_reason "npm '${name}' creates same-name bin (low/unknown popularity: ${dl}/week)"
+    fi
+  else
+    print_line "npm" "FOUND" "package exists; no same-name bin '${name}'; downloads_last_week=${dl}; bins=[$(echo "$bins" | tr '\n' ' ' | sed 's/ $//')]; downloads_api_raw=${NPM_DL_RAW:-none}; npm_view_raw=${NPM_VIEW_RAW:-none}"
+  fi
+
+  cleanup_dir "$tmp"
+}
+
+check_pypi() {
+  local name="$1"
+  if ! have python3; then
+    print_line "PyPI" "SKIP" "python3 not installed"
+    return 0
+  fi
+  if ! run_timeout python3 -m pip --version >/dev/null 2>&1; then
+    print_line "PyPI" "SKIP" "pip not available for python3"
+    return 0
+  fi
+  if ! have curl; then
+    print_line "PyPI" "SKIP" "curl required for existence/popularity probe"
+    return 0
+  fi
+
+  # Existence probe (fast)
+  if ! run_timeout curl -fsS "https://pypi.org/pypi/${name}/json" >/dev/null 2>&1; then
+    print_line "PyPI" "OK" "package not found"
+    return 0
+  fi
+
+  local tmp venv bindir rc scripts same="NO"
+  tmp="$(mktempdir)"
+  venv="${tmp}/venv"
+
+  rc=0
+  run_timeout python3 -m venv "$venv" >/dev/null 2>&1 || rc=$?
+  if [[ $rc -ne 0 ]]; then
+    if [[ $rc -eq 124 ]]; then
+      print_line "PyPI" "SKIP" "timeout creating venv (TIMEOUT_SECS=${TIMEOUT_SECS})"
+    else
+      print_line "PyPI" "SKIP" "failed to create venv (rc=${rc})"
+    fi
+    cleanup_dir "$tmp"
+    return 0
+  fi
+
+  bindir="${venv}/bin"
+  [[ -d "$bindir" ]] || bindir="${venv}/Scripts"
+
+  rc=0
+  run_timeout "${bindir}/python" -m pip install -q "$name" >/dev/null 2>&1 || rc=$?
+  if [[ $rc -eq 124 ]] && [[ "$PYPI_RETRY_TIMEOUT_SECS" -gt "$TIMEOUT_SECS" ]]; then
+    rc=0
+    run_timeout_with_secs "$PYPI_RETRY_TIMEOUT_SECS" "${bindir}/python" -m pip install -q "$name" >/dev/null 2>&1 || rc=$?
+  fi
+  if [[ $rc -ne 0 ]]; then
+    local dist_dir wheel_rc wheel_scripts dl
+    dist_dir="${tmp}/dist"
+    mkdir -p "$dist_dir"
+    wheel_rc=0
+    run_timeout_with_secs "$PYPI_RETRY_TIMEOUT_SECS" "${bindir}/python" -m pip download -q --no-deps --only-binary=:all: --dest "$dist_dir" "$name" >/dev/null 2>&1 || wheel_rc=$?
+    if [[ $wheel_rc -eq 0 ]]; then
+      wheel_scripts="$(pypi_scripts_from_wheels_dir "$dist_dir" || true)"
+      pypi_downloads_last_month "$name"
+      dl="$PYPI_DL_LAST_MONTH"
+      [[ -z "$dl" ]] && dl="unknown"
+      if [[ -n "$wheel_scripts" ]] && echo "$wheel_scripts" | awk -v n="$name" '$0==n{f=1} END{exit(f?0:1)}' >/dev/null 2>&1; then
+        print_line "PyPI" "FOUND" "SAME-NAME script '${name}' from wheel metadata (install rc=${rc}); downloads_last_month=${dl}; scripts_from_wheel=[$(echo "$wheel_scripts" | tr '\n' ' ' | sed 's/ $//')]; downloads_api_raw=${PYPI_DL_RAW:-none}"
+        if [[ "$dl" != "unknown" ]] && [[ "$dl" -ge "$PYPI_FAIL_MONTHLY" ]]; then
+          set_verdict "FAIL"
+          add_reason "PyPI '${name}' creates same-name script (popular: ${dl}/month; wheel metadata)"
+        else
+          set_verdict "WARN"
+          add_reason "PyPI '${name}' creates same-name script (low/unknown popularity: ${dl}/month; wheel metadata)"
+        fi
+      elif [[ -n "$wheel_scripts" ]]; then
+        print_line "PyPI" "FOUND" "package exists; no same-name script '${name}' (wheel metadata fallback; install rc=${rc}); downloads_last_month=${dl}; scripts_from_wheel=[$(echo "$wheel_scripts" | tr '\n' ' ' | sed 's/ $//')]; downloads_api_raw=${PYPI_DL_RAW:-none}"
+      else
+        print_line "PyPI" "SKIP" "install failed and wheel metadata had no console scripts (install rc=${rc})"
+      fi
+      cleanup_dir "$tmp"
+      return 0
+    fi
+
+    if [[ $rc -eq 124 ]]; then
+      print_line "PyPI" "SKIP" "timeout installing into temp venv (TIMEOUT_SECS=${TIMEOUT_SECS}, RETRY=${PYPI_RETRY_TIMEOUT_SECS})"
+    else
+      print_line "PyPI" "SKIP" "failed to install into temp venv (rc=${rc})"
+    fi
+    cleanup_dir "$tmp"
+    return 0
+  fi
+
+  scripts="$(list_bins_in_dir "$bindir")"
+  if [[ -z "$scripts" ]]; then
+    print_line "PyPI" "FOUND" "package exists; install created no scripts"
+    cleanup_dir "$tmp"
+    return 0
+  fi
+
+  if echo "$scripts" | awk -v n="$name" '$0==n{f=1} END{exit(f?0:1)}' >/dev/null 2>&1; then
+    same="YES"
+  fi
+
+  local dl
+  pypi_downloads_last_month "$name"
+  dl="$PYPI_DL_LAST_MONTH"
+  [[ -z "$dl" ]] && dl="unknown"
+
+  if [[ "$same" == "YES" ]]; then
+    print_line "PyPI" "FOUND" "SAME-NAME script '${name}' created; downloads_last_month=${dl}; scripts=[$(echo "$scripts" | tr '\n' ' ' | sed 's/ $//')]; downloads_api_raw=${PYPI_DL_RAW:-none}"
+    if [[ "$dl" != "unknown" ]] && [[ "$dl" -ge "$PYPI_FAIL_MONTHLY" ]]; then
+      set_verdict "FAIL"
+      add_reason "PyPI '${name}' creates same-name script (popular: ${dl}/month)"
+    else
+      set_verdict "WARN"
+      add_reason "PyPI '${name}' creates same-name script (low/unknown popularity: ${dl}/month)"
+    fi
+  else
+    print_line "PyPI" "FOUND" "package exists; no same-name script '${name}'; downloads_last_month=${dl}; downloads_api_raw=${PYPI_DL_RAW:-none}; scripts=[$(echo "$scripts" | tr '\n' ' ' | sed 's/ $//')]"
+  fi
+
+  cleanup_dir "$tmp"
+}
+
+print_verdict() {
+  local reason_str
+  reason_str="$(join_reasons)"
+  if [[ -n "$reason_str" ]]; then
+    print_line "VERDICT" "$VERDICT" "$reason_str"
+  else
+    print_line "VERDICT" "$VERDICT"
+  fi
+}
+
+main() {
+  read_args "$@"
+  if [[ "${#ARGS[@]}" -eq 0 ]]; then
+    echo "Usage: $0 den koya kura" >&2
+    echo "   or: $0 --file candidates.txt" >&2
+    exit 2
+  fi
+
+  local n
+  for n in "${ARGS[@]}"; do
+    [[ -n "$n" ]] || continue
+    VERDICT="OK"
+    REASONS=()
+
+    print_h1 "$n"
+    check_path "$n"
+    check_brew "$n"
+    check_apt "$n"
+    check_npm "$n"
+    check_pypi "$n"
+    print_verdict
+    echo
+  done
+}
+
+main "$@"

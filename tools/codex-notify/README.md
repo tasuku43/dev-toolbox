@@ -10,7 +10,7 @@ Sent text:
 
 iMessage result:
 
-![iMessage screenshot showing the result after sending "› Hi there Codex! I’m ready to work."](./assets/codex-notify-imessage.png)
+<img width="1170" height="767" alt="image" src="https://github.com/user-attachments/assets/8c638018-8665-40a6-8649-7886615115d1" />
 
 ## Purpose
 

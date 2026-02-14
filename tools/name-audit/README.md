@@ -1,45 +1,81 @@
 # name-audit
 
-Audit candidate command/tool names for collisions across common ecosystems.
+Audit candidate CLI/tool names for collision risk across common ecosystems.
 
-## What it checks
+## What it does
 
-For each candidate name, the script checks:
+For each candidate name, the tool checks:
 
-- `PATH` command collision
 - Homebrew exact match (formula/cask)
-- APT exact match (skips on non-Debian systems)
-- npm package and same-name binary collision
-- PyPI package and same-name console script collision
+- APT exact match
+- npm package existence and same-name executable risk
+- PyPI package existence and same-name executable risk
 
-It outputs a final verdict per name: `OK`, `WARN`, or `FAIL`.
+The output is designed for fast decisions:
 
-## Usage
+- `RISK: HIGH` when a blocking collision exists
+- `RISK: LOW` otherwise
+- `BLOCKERS` section only when risk is high
+- `CONTEXT` section with per-ecosystem evidence
 
-Run with inline candidates:
+## Risk policy
+
+- `HIGH`
+  - Homebrew/APT exact match
+  - npm same-name executable with `downloads/week >= NPM_FAIL_WEEKLY`
+  - PyPI same-name executable with `downloads/month >= PYPI_FAIL_MONTHLY`
+- `LOW`
+  - same-name executable exists but popularity is below threshold or unknown
+  - package exists but no same-name executable is created
+- `CLEAR` (ecosystem-level context status)
+  - no relevant collision found in that ecosystem
+
+## Build (Docker recommended)
+
+Docker is recommended to minimize environment differences (for example, availability of `apt-cache`, Homebrew, npm, and Python tooling) and run checks in a consistent runtime.
+
+Clone the repository and move to the repo root:
 
 ```bash
-tools/name-audit/name_audit hako koya kura
+git clone https://github.com/tasuku43/dev-toolbox.git
+cd dev-toolbox
 ```
 
-Run from a file:
+Build the image from the repo root:
 
 ```bash
-tools/name-audit/name_audit --file candidates.txt
+docker build -t name-audit tools/name-audit
 ```
 
-`candidates.txt` can include blank lines and comment lines (`# ...`).
+## Run
 
-## Verdict behavior (summary)
+Run with names passed directly as arguments:
 
-- `FAIL`:
-  - exact Homebrew/APT match
-  - npm/PyPI same-name executable with popularity above threshold
-- `WARN`:
-  - name already exists on `PATH`
-  - npm/PyPI same-name executable with low/unknown popularity
-- `OK`:
-  - no blocking collisions found
+```bash
+docker run --rm name-audit <candidate-name> <candidate-name>
+```
+
+## Output example
+
+```text
+== kra ==
+Checking Homebrew...... done (4s)
+Checking APT... done (0s)
+Checking npm... done (0s)
+Checking PyPI.... done (2s)
+
+RISK: LOW
+CONTEXT:
+- Homebrew: CLEAR (no exact match)
+- APT: SKIPPED (apt-cache not installed)
+- npm: CLEAR (package not found)
+- PyPI: FOUND
+  Risk: LOW
+  Evidence:
+    package exists
+    wheel has no console scripts
+    downloads/month: 29
+```
 
 ## Environment variables
 
@@ -47,29 +83,13 @@ tools/name-audit/name_audit --file candidates.txt
 - `PYPI_RETRY_TIMEOUT_SECS` (default: `90`)
 - `NPM_FAIL_WEEKLY` (default: `1000`)
 - `PYPI_FAIL_MONTHLY` (default: `2000`)
-- `KEEP_TMP` (default: `0`, set `1` to keep temp dirs)
-
-## Docker
-
-Build:
-
-```bash
-docker build -t name-audit tools/name-audit
-```
-
-Run with direct names:
-
-```bash
-docker run --rm name-audit hako koya kura
-```
-
-Run with file input:
-
-```bash
-docker run --rm -v "$PWD:/work" name-audit --file /work/candidates.txt
-```
+- `PYPI_LOW_MONTHLY` (default: `100`)
+- `KEEP_TMP` (default: `0`; set `1` to keep temp directories)
+- `NO_COLOR` (default: `0`; set `1` to disable color output)
 
 ## Notes
 
 - Network access is required for npm/PyPI popularity checks.
-- On macOS, APT checks are expected to be skipped.
+- On macOS, APT checks are expected to be `SKIPPED`.
+- Progress output is shown during checks (`Checking ...`) with elapsed time.
+- The process currently exits with `0` even when risk is high.

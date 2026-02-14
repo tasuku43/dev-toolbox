@@ -38,12 +38,12 @@ ENV PATH=/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:${PATH}
 
 WORKDIR /work
 
-COPY --chown=auditor:auditor name_audit /usr/local/bin/name_audit
-RUN chmod +x /usr/local/bin/name_audit
+COPY --chown=auditor:auditor name-audit /usr/local/bin/name-audit
+RUN chmod +x /usr/local/bin/name-audit
 
 USER auditor
 
 # Prime core formula metadata during build so runtime checks are fast and consistent.
 RUN brew update --force --quiet || true
 
-ENTRYPOINT ["name_audit"]
+ENTRYPOINT ["name-audit"]

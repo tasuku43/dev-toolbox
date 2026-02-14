@@ -22,14 +22,14 @@ tools/
     codex-notify
   name-audit/
     README.md
-    name_audit
+    name-audit
     Dockerfile
 ```
 
 ## 使い方
 
 - `./tools/codex-notify/codex-notify "<payload>"`
-- `./tools/name-audit/name_audit <candidate...>`
+- `./tools/name-audit/name-audit <candidate...>`
 
 ## ツール別ドキュメント
 

@@ -23,14 +23,14 @@ tools/
     codex-notify
   name-audit/
     README.md
-    name_audit
+    name-audit
     Dockerfile
 ```
 
 ## Usage
 
 - `./tools/codex-notify/codex-notify "<payload>"`
-- `./tools/name-audit/name_audit <candidate...>`
+- `docker build -t name-audit tools/name-audit && docker run --rm name-audit <candidate-name> <candidate-name>`
 
 ## Tool docs
 

@@ -5,10 +5,8 @@
 # - Homebrew exact name collision
 # - APT exact name collision (will SKIP on mac)
 # - npm: sandbox global install to temp prefix -> checks SAME-NAME bin
-#        + popularity (downloads last-week)
 # - PyPI: sandbox venv install -> checks SAME-NAME script
-#        + popularity (downloads last-month via pypistats)
-# - Final VERDICT: OK/WARN/FAIL with reasons
+# - Final result: whether install-time command collision is likely
 #
 # Usage:
 #   ./name-audit <candidate-name> <candidate-name>
@@ -27,7 +25,6 @@ KEEP_TMP="${KEEP_TMP:-0}"
 NPM_FAIL_WEEKLY="${NPM_FAIL_WEEKLY:-1000}"
 PYPI_FAIL_MONTHLY="${PYPI_FAIL_MONTHLY:-2000}"
 PYPI_RETRY_TIMEOUT_SECS="${PYPI_RETRY_TIMEOUT_SECS:-90}"
-PYPI_LOW_MONTHLY="${PYPI_LOW_MONTHLY:-100}"
 NO_COLOR="${NO_COLOR:-0}"
 
 if [[ "$NO_COLOR" == "1" ]]; then
@@ -50,7 +47,7 @@ color_status() {
   local s="$1"
   case "$s" in
     FAIL|HIGH) style "31;1" "$s" ;;
-    WARN|FOUND|LOW) style "33;1" "$s" ;;
+    WARN|FOUND|CAUTION|NOTICE) style "33;1" "$s" ;;
     PASS|OK|CLEAR) style "32;1" "$s" ;;
     SKIP|SKIPPED) style "2" "$s" ;;
     *) style "0" "$s" ;;
@@ -215,12 +212,16 @@ context_risk_for() {
   local n
 
   if [[ "$label" == "Homebrew" || "$label" == "APT" ]]; then
-    echo "HIGH"
+    if [[ "$details" == *"exact"* ]]; then
+      echo "HIGH"
+    else
+      echo "CLEAR"
+    fi
     return 0
   fi
 
   if [[ "$details" != *"same-name"* ]]; then
-    echo "LOW"
+    echo "CLEAR"
     return 0
   fi
 
@@ -229,7 +230,7 @@ context_risk_for() {
     if [[ "$n" -ge "$NPM_FAIL_WEEKLY" ]]; then
       echo "HIGH"
     else
-      echo "LOW"
+      echo "CAUTION"
     fi
     return 0
   fi
@@ -238,15 +239,61 @@ context_risk_for() {
     n="${BASH_REMATCH[1]}"
     if [[ "$n" -ge "$PYPI_FAIL_MONTHLY" ]]; then
       echo "HIGH"
-    elif [[ "$n" -lt "$PYPI_LOW_MONTHLY" ]]; then
-      echo "LOW"
     else
-      echo "LOW"
+      echo "CAUTION"
     fi
     return 0
   fi
 
-  echo "LOW"
+  echo "CAUTION"
+}
+
+check_brew() {
+  local name="$1"
+  if ! have brew; then
+    print_line "Homebrew" "SKIPPED" "brew not installed"
+    return 0
+  fi
+
+  local out_f out_c hit_f="NO" hit_c="NO"
+
+  out_f="$(run_timeout brew search --formula "$name" || true)"
+  if [[ -n "$out_f" ]] && echo "$out_f" | awk -v n="$name" '$0==n{f=1} END{exit(f?0:1)}' >/dev/null 2>&1; then
+    hit_f="YES"
+  fi
+
+  out_c="$(run_timeout brew search --cask "$name" || true)"
+  if [[ -n "$out_c" ]] && echo "$out_c" | awk -v n="$name" '$0==n{f=1} END{exit(f?0:1)}' >/dev/null 2>&1; then
+    hit_c="YES"
+  fi
+
+  if [[ "$hit_f" == "YES" || "$hit_c" == "YES" ]]; then
+    print_line "Homebrew" "FOUND" "exact match; formula=${hit_f}; cask=${hit_c}"
+    set_verdict "FAIL"
+    add_fail_reason "Homebrew: exact match exists"
+  else
+    print_line "Homebrew" "CLEAR" "no exact match"
+  fi
+}
+
+check_apt() {
+  local name="$1"
+  if ! have apt-cache; then
+    print_line "APT" "SKIPPED" "apt-cache not installed"
+    return 0
+  fi
+
+  if run_timeout apt-cache show "$name" >/dev/null 2>&1; then
+    print_line "APT" "FOUND" "exact package name exists"
+    set_verdict "FAIL"
+    add_fail_reason "APT: exact package exists"
+  elif run_timeout apt-cache search --names-only "^${name}$" | awk -v n="$name" '$1==n{f=1} END{exit(f?0:1)}' >/dev/null 2>&1; then
+    print_line "APT" "FOUND" "exact name match via search"
+    set_verdict "FAIL"
+    add_fail_reason "APT: exact package exists (via search)"
+  else
+    print_line "APT" "CLEAR" "no exact match"
+  fi
 }
 
 print_context() {
@@ -274,8 +321,7 @@ print_context() {
 
     risk="$(context_risk_for "$label" "$details")"
     risk_colored="$(color_status "$risk")"
-    echo "- ${label}: ${status_colored}"
-    echo "  Risk: ${risk_colored}"
+    echo "- ${label}: ${risk_colored}"
     echo "  Evidence:"
 
     IFS=';' read -r -a parts <<< "$details"
@@ -415,54 +461,6 @@ for whl in dist_dir.glob("*.whl"):
 PY
 }
 
-check_brew() {
-  local name="$1"
-  if ! have brew; then
-    print_line "Homebrew" "SKIPPED" "brew not installed"
-    return 0
-  fi
-
-  local out_f out_c hit_f="NO" hit_c="NO"
-
-  out_f="$(run_timeout brew search --formula "$name" || true)"
-  if [[ -n "$out_f" ]] && echo "$out_f" | awk -v n="$name" '$0==n{f=1} END{exit(f?0:1)}' >/dev/null 2>&1; then
-    hit_f="YES"
-  fi
-
-  out_c="$(run_timeout brew search --cask "$name" || true)"
-  if [[ -n "$out_c" ]] && echo "$out_c" | awk -v n="$name" '$0==n{f=1} END{exit(f?0:1)}' >/dev/null 2>&1; then
-    hit_c="YES"
-  fi
-
-  if [[ "$hit_f" == "YES" || "$hit_c" == "YES" ]]; then
-    print_line "Homebrew" "FOUND" "formula=${hit_f}, cask=${hit_c}"
-    set_verdict "FAIL"
-    add_fail_reason "Homebrew: exact match exists"
-  else
-    print_line "Homebrew" "CLEAR" "no exact match"
-  fi
-}
-
-check_apt() {
-  local name="$1"
-  if ! have apt-cache; then
-    print_line "APT" "SKIPPED" "apt-cache not installed"
-    return 0
-  fi
-
-  if run_timeout apt-cache show "$name" >/dev/null 2>&1; then
-    print_line "APT" "FOUND" "exact package name exists"
-    set_verdict "FAIL"
-    add_fail_reason "APT: exact package exists"
-  elif run_timeout apt-cache search --names-only "^${name}$" | awk -v n="$name" '$1==n{f=1} END{exit(f?0:1)}' >/dev/null 2>&1; then
-    print_line "APT" "FOUND" "exact name match via search"
-    set_verdict "FAIL"
-    add_fail_reason "APT: exact package exists (via search)"
-  else
-    print_line "APT" "CLEAR" "no exact match"
-  fi
-}
-
 check_npm() {
   local name="$1"
   if ! have npm; then
@@ -495,10 +493,10 @@ check_npm() {
     print_line "npm" "FOUND" "same-name bin '${name}' created; downloads/week=${dl}"
     if [[ "$dl" != "unknown" ]] && [[ "$dl" -ge "$NPM_FAIL_WEEKLY" ]]; then
       set_verdict "FAIL"
-      add_fail_reason "npm '${name}' creates same-name bin (popular: ${dl}/week)"
+      add_fail_reason "npm: same-name executable '${name}' exists (popular: ${dl}/week)"
     else
       set_verdict "WARN"
-      add_warn_reason "npm '${name}' creates same-name bin (low/unknown popularity: ${dl}/week)"
+      add_warn_reason "npm: same-name executable '${name}' exists (low/unknown popularity: ${dl}/week)"
     fi
   elif [[ -n "$bins_from_view" ]]; then
     print_line "npm" "FOUND" "package exists; no same-name bin '${name}'; downloads/week=${dl}"
@@ -547,10 +545,10 @@ check_pypi() {
       print_line "PyPI" "FOUND" "same-name script '${name}' created; downloads/month=${dl}"
       if [[ "$dl" != "unknown" ]] && [[ "$dl" -ge "$PYPI_FAIL_MONTHLY" ]]; then
         set_verdict "FAIL"
-        add_fail_reason "PyPI '${name}' creates same-name script (popular: ${dl}/month; wheel metadata)"
+        add_fail_reason "PyPI: same-name executable '${name}' exists (popular: ${dl}/month)"
       else
         set_verdict "WARN"
-        add_warn_reason "PyPI '${name}' creates same-name script (low/unknown popularity: ${dl}/month; wheel metadata)"
+        add_warn_reason "PyPI: same-name executable '${name}' exists (low/unknown popularity: ${dl}/month)"
       fi
     elif [[ -n "$wheel_scripts" ]]; then
       print_line "PyPI" "FOUND" "package exists; no same-name script '${name}'; downloads/month=${dl}"
@@ -603,10 +601,10 @@ check_pypi() {
         print_line "PyPI" "FOUND" "same-name script '${name}' via wheel metadata; downloads/month=${dl}; install_rc=${rc}"
         if [[ "$dl" != "unknown" ]] && [[ "$dl" -ge "$PYPI_FAIL_MONTHLY" ]]; then
           set_verdict "FAIL"
-          add_fail_reason "PyPI '${name}' creates same-name script (popular: ${dl}/month; wheel metadata)"
+          add_fail_reason "PyPI: same-name executable '${name}' exists (popular: ${dl}/month; wheel metadata)"
         else
           set_verdict "WARN"
-          add_warn_reason "PyPI '${name}' creates same-name script (low/unknown popularity: ${dl}/month; wheel metadata)"
+          add_warn_reason "PyPI: same-name executable '${name}' exists (low/unknown popularity: ${dl}/month; wheel metadata)"
         fi
       elif [[ -n "$wheel_scripts" ]]; then
         print_line "PyPI" "FOUND" "package exists; no same-name script '${name}' via wheel metadata; downloads/month=${dl}; install_rc=${rc}"
@@ -646,10 +644,10 @@ check_pypi() {
     print_line "PyPI" "FOUND" "same-name script '${name}' created; downloads/month=${dl}"
     if [[ "$dl" != "unknown" ]] && [[ "$dl" -ge "$PYPI_FAIL_MONTHLY" ]]; then
       set_verdict "FAIL"
-      add_fail_reason "PyPI '${name}' creates same-name script (popular: ${dl}/month)"
+      add_fail_reason "PyPI: same-name executable '${name}' exists (popular: ${dl}/month)"
     else
       set_verdict "WARN"
-      add_warn_reason "PyPI '${name}' creates same-name script (low/unknown popularity: ${dl}/month)"
+      add_warn_reason "PyPI: same-name executable '${name}' exists (low/unknown popularity: ${dl}/month)"
     fi
   else
     print_line "PyPI" "FOUND" "package exists; no same-name script '${name}'; downloads/month=${dl}"
@@ -662,50 +660,32 @@ print_verdict() {
   local risk_text risk_colored
   if [[ "$VERDICT" == "FAIL" ]]; then
     risk_text="HIGH"
+  elif [[ "$VERDICT" == "WARN" ]]; then
+    risk_text="CAUTION"
   else
-    risk_text="LOW"
+    risk_text="CLEAR"
   fi
   risk_colored="$(color_status "$risk_text")"
   echo
   echo "RISK: ${risk_colored}"
-
+  echo "Why:"
   if [[ "$VERDICT" == "FAIL" ]] && [[ "${#FAIL_REASONS[@]}" -gt 0 ]]; then
-    echo "BLOCKERS:"
-    local r
-    local x_mark
+    local r x_mark
     x_mark="$(style "31;1" "✗")"
     for r in "${FAIL_REASONS[@]}"; do
       echo "  ${x_mark} ${r}"
     done
-    echo
   elif [[ "$VERDICT" == "WARN" ]] && [[ "${#WARN_REASONS[@]}" -gt 0 ]]; then
-    echo "$(style "33;1" "WARNINGS:")"
     local r
     for r in "${WARN_REASONS[@]}"; do
-      echo "- ${r}"
+      echo "  - ${r}"
     done
-    echo
+  else
+    echo "  - no blocking collision found in checked ecosystems"
   fi
+  echo
 
   print_context
-}
-
-print_risk_policy() {
-  local high_colored low_colored clear_colored
-  high_colored="$(color_status "HIGH")"
-  low_colored="$(color_status "LOW")"
-  clear_colored="$(color_status "CLEAR")"
-
-  echo "Risk Policy:"
-  echo "  ${high_colored}:"
-  echo "    - Homebrew/APT exact match"
-  echo "    - npm same-name executable with downloads/week >= ${NPM_FAIL_WEEKLY}"
-  echo "    - PyPI same-name executable with downloads/month >= ${PYPI_FAIL_MONTHLY}"
-  echo "  ${low_colored}:"
-  echo "    - same-name executable exists but popularity is below threshold or unknown"
-  echo "    - package exists but no same-name executable is created"
-  echo "  ${clear_colored}:"
-  echo "    - no relevant collision found in that ecosystem"
 }
 
 main() {
@@ -737,8 +717,6 @@ main() {
     print_verdict
     echo
   done
-
-  print_risk_policy
 }
 
 main "$@"

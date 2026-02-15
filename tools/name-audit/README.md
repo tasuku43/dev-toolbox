@@ -8,31 +8,23 @@ For each candidate name, the tool checks:
 
 - Homebrew exact match (formula/cask)
 - APT exact match
-- npm package existence and same-name executable risk
-- PyPI package existence and same-name executable risk
+- npm same-name executable collision
+- PyPI same-name executable collision
 
 The output is designed for fast decisions:
 
-- `RISK: HIGH` when a blocking collision exists
-- `RISK: LOW` otherwise
-- `BLOCKERS` section only when risk is high
-- `CONTEXT` section with per-ecosystem evidence
+- `RISK: HIGH` when a blocking collision is found
+- `RISK: CAUTION` when a same-name executable exists but popularity is low/unknown
+- `RISK: CLEAR` when no blocking collision is found
+- `Why` section explains why the risk was assigned (per candidate)
+- `CONTEXT` section shows evidence by ecosystem
 
-## Risk policy
-
-- `HIGH`
-  - Homebrew/APT exact match
-  - npm same-name executable with `downloads/week >= NPM_FAIL_WEEKLY`
-  - PyPI same-name executable with `downloads/month >= PYPI_FAIL_MONTHLY`
-- `LOW`
-  - same-name executable exists but popularity is below threshold or unknown
-  - package exists but no same-name executable is created
-- `CLEAR` (ecosystem-level context status)
-  - no relevant collision found in that ecosystem
+Important:
+- Package existence alone (library-only, no same-name executable) does not raise risk by itself.
 
 ## Build (Docker recommended)
 
-Docker is recommended to minimize environment differences (for example, availability of `apt-cache`, Homebrew, npm, and Python tooling) and run checks in a consistent runtime.
+Docker is recommended to minimize environment differences and run checks in a consistent runtime.
 
 Clone the repository and move to the repo root:
 
@@ -55,26 +47,83 @@ Run with names passed directly as arguments:
 docker run --rm name-audit <candidate-name> <candidate-name>
 ```
 
+## Optional: AI-assisted review
+
+After running `name-audit`, you can ask an LLM tool (for example Codex CLI or Claude Code) for additional naming feedback.
+
+Use AI feedback as a secondary opinion:
+
+- Treat `name-audit` output as the primary risk signal.
+- Use AI feedback for naming quality questions (readability, memorability, alternatives).
+
+Prompt template:
+
+```text
+I ran name-audit for these candidates:
+<PASTE OUTPUT>
+
+Please:
+1. summarize collision risk,
+2. suggest safer alternatives,
+3. explain trade-offs (clarity, uniqueness, future conflict risk).
+```
+
 ## Output example
 
 ```text
-== kra ==
+docker run --rm name-audit git den semverx
+
+== git ==
+Checking Homebrew...... done (4s)
+Checking APT... done (0s)
+Checking npm... done (1s)
+Checking PyPI... done (1s)
+
+RISK: HIGH
+Why:
+  ✗ Homebrew: exact match exists
+CONTEXT:
+- Homebrew: HIGH
+  Evidence:
+    exact match
+    formula: YES
+    cask: NO
+- APT: SKIPPED (apt-cache not installed)
+- npm: CLEAR (package not found)
+- PyPI: CLEAR (package not found)
+
+== den ==
 Checking Homebrew...... done (4s)
 Checking APT... done (0s)
 Checking npm... done (0s)
 Checking PyPI.... done (2s)
 
-RISK: LOW
+RISK: CAUTION
+Why:
+  - PyPI: same-name executable 'den' exists (low/unknown popularity: unknown/month)
 CONTEXT:
 - Homebrew: CLEAR (no exact match)
 - APT: SKIPPED (apt-cache not installed)
 - npm: CLEAR (package not found)
-- PyPI: FOUND
-  Risk: LOW
+- PyPI: CAUTION
   Evidence:
-    package exists
-    wheel has no console scripts
-    downloads/month: 29
+    same-name script 'den' created
+    downloads/month: unknown
+
+== semverx ==
+Checking Homebrew...... done (4s)
+Checking APT... done (0s)
+Checking npm... done (0s)
+Checking PyPI... done (0s)
+
+RISK: CLEAR
+Why:
+  - no blocking collision found in checked ecosystems
+CONTEXT:
+- Homebrew: CLEAR (no exact match)
+- APT: SKIPPED (apt-cache not installed)
+- npm: CLEAR (package not found)
+- PyPI: CLEAR (package not found)
 ```
 
 ## Environment variables
@@ -83,7 +132,6 @@ CONTEXT:
 - `PYPI_RETRY_TIMEOUT_SECS` (default: `90`)
 - `NPM_FAIL_WEEKLY` (default: `1000`)
 - `PYPI_FAIL_MONTHLY` (default: `2000`)
-- `PYPI_LOW_MONTHLY` (default: `100`)
 - `KEEP_TMP` (default: `0`; set `1` to keep temp directories)
 - `NO_COLOR` (default: `0`; set `1` to disable color output)
 

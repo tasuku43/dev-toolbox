@@ -5,7 +5,9 @@ on:
     branches:
       - main
     paths:
-      - "tools/name-audit/**"
+      - "tools/name-audit/Dockerfile"
+      - "tools/name-audit/name-audit"
+      - "tools/name-audit/docker-entrypoint.sh"
       - ".github/workflows/name-audit-ghcr.yml"
   workflow_dispatch:
 

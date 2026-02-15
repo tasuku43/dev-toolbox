@@ -39,8 +39,6 @@ docker run --rm -e NAME_AUDIT_REFRESH=0 ghcr.io/tasuku43/name-audit:latest <cand
 
 ## Build locally (optional)
 
-Docker is recommended to minimize environment differences and run checks in a consistent runtime.
-
 Clone the repository and move to the repo root:
 
 ```bash
@@ -56,13 +54,13 @@ docker build -t name-audit tools/name-audit
 
 ## Run
 
-Run with names passed directly as arguments:
+If you built the image locally, run with names passed directly as arguments:
 
 ```bash
 docker run --rm name-audit <candidate-name> <candidate-name>
 ```
 
-At container start, metadata is refreshed (`brew update`, `apt-file update`) to avoid stale cache from old image builds.
+At container start, metadata is refreshed (`brew update`, `apt-file update`) so checks use fresh indexes.
 If you prefer lower latency, disable refresh per run:
 
 ```bash
@@ -93,8 +91,12 @@ Please:
 ## Output example
 
 ```text
-docker run --rm name-audit git den semverx
+docker run --rm ghcr.io/tasuku43/name-audit:latest git den semverx
 
+[name-audit] Refreshing Homebrew metadata...
+[name-audit] Refreshing Homebrew metadata done (18s)
+[name-audit] Refreshing apt-file index...
+[name-audit] Refreshing apt-file index done (0s)
 == git ==
 Checking Homebrew...... done (4s)
 Checking apt-file... done (0s)
@@ -111,8 +113,8 @@ CONTEXT:
     exact match
     formula: YES
     cask: NO
-- apt-file: SKIPPED (apt-file not installed)
-- dnf: SKIPPED (dnf not installed)
+- apt-file: CLEAR
+- dnf: CLEAR
 - npm: CLEAR (package not found)
 - PyPI: CLEAR (package not found)
 
@@ -128,8 +130,8 @@ Why:
   - PyPI: same-name executable 'den' exists (low/unknown popularity: unknown/month)
 CONTEXT:
 - Homebrew: CLEAR (no exact match)
-- apt-file: SKIPPED (apt-file not installed)
-- dnf: SKIPPED (dnf not installed)
+- apt-file: CLEAR
+- dnf: CLEAR
 - npm: CLEAR (package not found)
 - PyPI: CAUTION
   Evidence:
@@ -148,8 +150,8 @@ Why:
   - no blocking collision found in checked ecosystems
 CONTEXT:
 - Homebrew: CLEAR (no exact match)
-- apt-file: SKIPPED (apt-file not installed)
-- dnf: SKIPPED (dnf not installed)
+- apt-file: CLEAR
+- dnf: CLEAR
 - npm: CLEAR (package not found)
 - PyPI: CLEAR (package not found)
 ```
@@ -168,6 +170,7 @@ CONTEXT:
 - Network access is required for npm/PyPI popularity checks.
 - Runtime metadata refresh (`brew update`, `apt-file update`) also needs network access.
 - `apt-file` results depend on local apt-file index freshness.
+- `dnf` checks require available rpm repositories in the runtime environment.
 - Progress output is shown during checks (`Checking ...`) with elapsed time.
 - If popularity data cannot be fetched, collision checks still run and popularity is treated as `unknown`.
 - The process currently exits with `0` even when risk is high.

@@ -128,7 +128,14 @@ run_check_with_progress() {
 }
 
 print_h1() {
-  echo "== $1 =="
+  local header
+  header="=== $1 ==="
+  if [[ "$USE_COLOR" == "1" ]]; then
+    style "36;1" "$header"
+    printf "\n"
+  else
+    echo "$header"
+  fi
 }
 
 print_line() {
@@ -634,7 +641,7 @@ check_pypi() {
     if [[ $rc -eq 124 ]]; then
       print_line "PyPI" "SKIPPED" "timeout installing temp venv; timeout=${TIMEOUT_SECS}s; retry=${PYPI_RETRY_TIMEOUT_SECS}s"
     else
-      print_line "PyPI" "SKIPPED" "failed installing temp venv; rc=${rc}"
+      print_line "PyPI" "SKIPPED" "failed installing package in temp venv; rc=${rc}"
     fi
     cleanup_dir "$tmp"
     return 0

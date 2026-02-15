@@ -102,11 +102,11 @@ run_check_with_progress() {
   local start end elapsed rc dots_pid done_label fail_label
 
   start="$(date +%s)"
-  printf "Checking %s..." "$label" >&2
+  printf "Checking %s..." "$label"
   (
     while true; do
       sleep 1
-      printf "." >&2
+      printf "."
     done
   ) &
   dots_pid=$!
@@ -120,9 +120,9 @@ run_check_with_progress() {
   fail_label="$(style "31;1" "failed")"
 
   if [[ $rc -eq 0 ]]; then
-    printf " %s (%ss)\n" "$done_label" "$elapsed" >&2
+    printf " %s (%ss)\n" "$done_label" "$elapsed"
   else
-    printf " %s (%ss, rc=%s)\n" "$fail_label" "$elapsed" "$rc" >&2
+    printf " %s (%ss, rc=%s)\n" "$fail_label" "$elapsed" "$rc"
   fi
   return "$rc"
 }

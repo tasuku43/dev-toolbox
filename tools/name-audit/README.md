@@ -9,7 +9,6 @@ For each candidate name, the tool checks:
 - Homebrew exact match (formula/cask)
 - apt-file command-path collision
 - dnf command-path collision
-- winget command collision (`winget search --command`)
 - npm same-name executable collision
 - PyPI same-name executable collision
 
@@ -24,7 +23,21 @@ The output is designed for fast decisions:
 Important:
 - Package existence alone (library-only, no same-name executable) does not raise risk by itself.
 
-## Build (Docker recommended)
+## Use via GHCR (recommended)
+
+Use the published image directly:
+
+```bash
+docker run --rm ghcr.io/tasuku43/name-audit:latest <candidate-name> <candidate-name>
+```
+
+If you prefer lower latency, disable runtime metadata refresh:
+
+```bash
+docker run --rm -e NAME_AUDIT_REFRESH=0 ghcr.io/tasuku43/name-audit:latest <candidate-name>
+```
+
+## Build locally (optional)
 
 Docker is recommended to minimize environment differences and run checks in a consistent runtime.
 
@@ -86,7 +99,6 @@ docker run --rm name-audit git den semverx
 Checking Homebrew...... done (4s)
 Checking apt-file... done (0s)
 Checking dnf... done (0s)
-Checking winget... done (0s)
 Checking npm... done (1s)
 Checking PyPI... done (1s)
 
@@ -101,7 +113,6 @@ CONTEXT:
     cask: NO
 - apt-file: SKIPPED (apt-file not installed)
 - dnf: SKIPPED (dnf not installed)
-- winget: SKIPPED (winget not installed)
 - npm: CLEAR (package not found)
 - PyPI: CLEAR (package not found)
 
@@ -109,7 +120,6 @@ CONTEXT:
 Checking Homebrew...... done (4s)
 Checking apt-file... done (0s)
 Checking dnf... done (0s)
-Checking winget... done (0s)
 Checking npm... done (0s)
 Checking PyPI.... done (2s)
 
@@ -120,7 +130,6 @@ CONTEXT:
 - Homebrew: CLEAR (no exact match)
 - apt-file: SKIPPED (apt-file not installed)
 - dnf: SKIPPED (dnf not installed)
-- winget: SKIPPED (winget not installed)
 - npm: CLEAR (package not found)
 - PyPI: CAUTION
   Evidence:
@@ -131,7 +140,6 @@ CONTEXT:
 Checking Homebrew...... done (4s)
 Checking apt-file... done (0s)
 Checking dnf... done (0s)
-Checking winget... done (0s)
 Checking npm... done (0s)
 Checking PyPI... done (0s)
 
@@ -142,7 +150,6 @@ CONTEXT:
 - Homebrew: CLEAR (no exact match)
 - apt-file: SKIPPED (apt-file not installed)
 - dnf: SKIPPED (dnf not installed)
-- winget: SKIPPED (winget not installed)
 - npm: CLEAR (package not found)
 - PyPI: CLEAR (package not found)
 ```
@@ -160,7 +167,6 @@ CONTEXT:
 
 - Network access is required for npm/PyPI popularity checks.
 - Runtime metadata refresh (`brew update`, `apt-file update`) also needs network access.
-- Some checks are OS-dependent and may be `SKIPPED` (for example `winget` on non-Windows, `dnf` on non-Fedora).
 - `apt-file` results depend on local apt-file index freshness.
 - Progress output is shown during checks (`Checking ...`) with elapsed time.
 - If popularity data cannot be fetched, collision checks still run and popularity is treated as `unknown`.

@@ -5,7 +5,6 @@
 # - Homebrew exact name collision
 # - apt-file command-path collision
 # - dnf command-path collision
-# - winget command collision via --command search
 # - npm: sandbox global install to temp prefix -> checks SAME-NAME bin
 # - PyPI: sandbox venv install -> checks SAME-NAME script
 # - Final result: whether install-time command collision is likely
@@ -213,7 +212,7 @@ context_risk_for() {
   local details="$2"
   local n
 
-  if [[ "$label" == "Homebrew" || "$label" == "apt-file" || "$label" == "dnf" || "$label" == "winget" ]]; then
+  if [[ "$label" == "Homebrew" || "$label" == "apt-file" || "$label" == "dnf" ]]; then
     if [[ "$details" == *"exact"* ]]; then
       echo "HIGH"
     else
@@ -311,30 +310,6 @@ check_dnf() {
     add_fail_reason "dnf: exact command path exists"
   else
     print_line "dnf" "CLEAR" "no exact command path match"
-  fi
-}
-
-check_winget() {
-  local name="$1"
-  if ! have winget; then
-    print_line "winget" "SKIPPED" "winget not installed"
-    return 0
-  fi
-
-  local out
-  out="$(run_timeout winget search --command "$name" --exact --accept-source-agreements 2>/dev/null || true)"
-
-  if [[ -z "$out" ]] || echo "$out" | awk 'tolower($0) ~ /no package found matching input criteria/{f=1} END{exit(f?0:1)}' >/dev/null 2>&1; then
-    print_line "winget" "CLEAR" "no exact command match"
-    return 0
-  fi
-
-  if echo "$out" | awk 'BEGIN{c=0} /^[[:space:]]*$/ {next} /^[-[:space:]]+$/ {next} tolower($0) ~ /^name[[:space:]]+id[[:space:]]+/ {next} {c=1} END{exit(c?0:1)}' >/dev/null 2>&1; then
-    print_line "winget" "FOUND" "exact command match exists"
-    set_verdict "FAIL"
-    add_fail_reason "winget: exact command match exists"
-  else
-    print_line "winget" "CLEAR" "no exact command match"
   fi
 }
 
@@ -754,7 +729,6 @@ main() {
     run_check_with_progress "Homebrew" check_brew "$n"
     run_check_with_progress "apt-file" check_apt_file "$n"
     run_check_with_progress "dnf" check_dnf "$n"
-    run_check_with_progress "winget" check_winget "$n"
     run_check_with_progress "npm" check_npm "$n"
     run_check_with_progress "PyPI" check_pypi "$n"
     print_verdict

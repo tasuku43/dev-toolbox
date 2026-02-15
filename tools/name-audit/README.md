@@ -7,7 +7,9 @@ Audit candidate CLI/tool names for collision risk across common ecosystems.
 For each candidate name, the tool checks:
 
 - Homebrew exact match (formula/cask)
-- APT exact match
+- apt-file command-path collision
+- dnf command-path collision
+- winget command collision (`winget search --command`)
 - npm same-name executable collision
 - PyPI same-name executable collision
 
@@ -75,7 +77,9 @@ docker run --rm name-audit git den semverx
 
 == git ==
 Checking Homebrew...... done (4s)
-Checking APT... done (0s)
+Checking apt-file... done (0s)
+Checking dnf... done (0s)
+Checking winget... done (0s)
 Checking npm... done (1s)
 Checking PyPI... done (1s)
 
@@ -88,13 +92,17 @@ CONTEXT:
     exact match
     formula: YES
     cask: NO
-- APT: SKIPPED (apt-cache not installed)
+- apt-file: SKIPPED (apt-file not installed)
+- dnf: SKIPPED (dnf not installed)
+- winget: SKIPPED (winget not installed)
 - npm: CLEAR (package not found)
 - PyPI: CLEAR (package not found)
 
 == den ==
 Checking Homebrew...... done (4s)
-Checking APT... done (0s)
+Checking apt-file... done (0s)
+Checking dnf... done (0s)
+Checking winget... done (0s)
 Checking npm... done (0s)
 Checking PyPI.... done (2s)
 
@@ -103,7 +111,9 @@ Why:
   - PyPI: same-name executable 'den' exists (low/unknown popularity: unknown/month)
 CONTEXT:
 - Homebrew: CLEAR (no exact match)
-- APT: SKIPPED (apt-cache not installed)
+- apt-file: SKIPPED (apt-file not installed)
+- dnf: SKIPPED (dnf not installed)
+- winget: SKIPPED (winget not installed)
 - npm: CLEAR (package not found)
 - PyPI: CAUTION
   Evidence:
@@ -112,7 +122,9 @@ CONTEXT:
 
 == semverx ==
 Checking Homebrew...... done (4s)
-Checking APT... done (0s)
+Checking apt-file... done (0s)
+Checking dnf... done (0s)
+Checking winget... done (0s)
 Checking npm... done (0s)
 Checking PyPI... done (0s)
 
@@ -121,7 +133,9 @@ Why:
   - no blocking collision found in checked ecosystems
 CONTEXT:
 - Homebrew: CLEAR (no exact match)
-- APT: SKIPPED (apt-cache not installed)
+- apt-file: SKIPPED (apt-file not installed)
+- dnf: SKIPPED (dnf not installed)
+- winget: SKIPPED (winget not installed)
 - npm: CLEAR (package not found)
 - PyPI: CLEAR (package not found)
 ```
@@ -138,6 +152,8 @@ CONTEXT:
 ## Notes
 
 - Network access is required for npm/PyPI popularity checks.
-- On macOS, APT checks are expected to be `SKIPPED`.
+- Some checks are OS-dependent and may be `SKIPPED` (for example `winget` on non-Windows, `dnf` on non-Fedora).
+- `apt-file` results depend on local apt-file index freshness.
 - Progress output is shown during checks (`Checking ...`) with elapsed time.
+- If popularity data cannot be fetched, collision checks still run and popularity is treated as `unknown`.
 - The process currently exits with `0` even when risk is high.

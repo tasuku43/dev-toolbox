@@ -3,7 +3,9 @@
 #
 # What it does:
 # - Homebrew exact name collision
-# - APT exact name collision (will SKIP on mac)
+# - apt-file command-path collision
+# - dnf command-path collision
+# - winget command collision via --command search
 # - npm: sandbox global install to temp prefix -> checks SAME-NAME bin
 # - PyPI: sandbox venv install -> checks SAME-NAME script
 # - Final result: whether install-time command collision is likely
@@ -211,7 +213,7 @@ context_risk_for() {
   local details="$2"
   local n
 
-  if [[ "$label" == "Homebrew" || "$label" == "APT" ]]; then
+  if [[ "$label" == "Homebrew" || "$label" == "apt-file" || "$label" == "dnf" || "$label" == "winget" ]]; then
     if [[ "$details" == *"exact"* ]]; then
       echo "HIGH"
     else
@@ -276,23 +278,63 @@ check_brew() {
   fi
 }
 
-check_apt() {
+check_apt_file() {
   local name="$1"
-  if ! have apt-cache; then
-    print_line "APT" "SKIPPED" "apt-cache not installed"
+  if ! have apt-file; then
+    print_line "apt-file" "SKIPPED" "apt-file not installed"
     return 0
   fi
 
-  if run_timeout apt-cache show "$name" >/dev/null 2>&1; then
-    print_line "APT" "FOUND" "exact package name exists"
+  local out
+  out="$(run_timeout apt-file search --regexp "(^|/)(usr/)?(s)?bin/${name}$" 2>/dev/null || true)"
+  if [[ -n "$out" ]]; then
+    print_line "apt-file" "FOUND" "exact command path exists"
     set_verdict "FAIL"
-    add_fail_reason "APT: exact package exists"
-  elif run_timeout apt-cache search --names-only "^${name}$" | awk -v n="$name" '$1==n{f=1} END{exit(f?0:1)}' >/dev/null 2>&1; then
-    print_line "APT" "FOUND" "exact name match via search"
-    set_verdict "FAIL"
-    add_fail_reason "APT: exact package exists (via search)"
+    add_fail_reason "apt-file: exact command path exists"
   else
-    print_line "APT" "CLEAR" "no exact match"
+    print_line "apt-file" "CLEAR" "no exact command path match"
+  fi
+}
+
+check_dnf() {
+  local name="$1"
+  if ! have dnf; then
+    print_line "dnf" "SKIPPED" "dnf not installed"
+    return 0
+  fi
+
+  local out
+  out="$(run_timeout dnf -q repoquery --whatprovides "*/bin/${name}" 2>/dev/null || true)"
+  if [[ -n "$out" ]] && ! echo "$out" | awk 'tolower($0) ~ /no matches found/{f=1} END{exit(f?0:1)}' >/dev/null 2>&1; then
+    print_line "dnf" "FOUND" "exact command path exists"
+    set_verdict "FAIL"
+    add_fail_reason "dnf: exact command path exists"
+  else
+    print_line "dnf" "CLEAR" "no exact command path match"
+  fi
+}
+
+check_winget() {
+  local name="$1"
+  if ! have winget; then
+    print_line "winget" "SKIPPED" "winget not installed"
+    return 0
+  fi
+
+  local out
+  out="$(run_timeout winget search --command "$name" --exact --accept-source-agreements 2>/dev/null || true)"
+
+  if [[ -z "$out" ]] || echo "$out" | awk 'tolower($0) ~ /no package found matching input criteria/{f=1} END{exit(f?0:1)}' >/dev/null 2>&1; then
+    print_line "winget" "CLEAR" "no exact command match"
+    return 0
+  fi
+
+  if echo "$out" | awk 'BEGIN{c=0} /^[[:space:]]*$/ {next} /^[-[:space:]]+$/ {next} tolower($0) ~ /^name[[:space:]]+id[[:space:]]+/ {next} {c=1} END{exit(c?0:1)}' >/dev/null 2>&1; then
+    print_line "winget" "FOUND" "exact command match exists"
+    set_verdict "FAIL"
+    add_fail_reason "winget: exact command match exists"
+  else
+    print_line "winget" "CLEAR" "no exact command match"
   fi
 }
 
@@ -321,6 +363,10 @@ print_context() {
 
     risk="$(context_risk_for "$label" "$details")"
     risk_colored="$(color_status "$risk")"
+    if [[ "$risk" == "CLEAR" ]]; then
+      echo "- ${label}: ${risk_colored}"
+      continue
+    fi
     echo "- ${label}: ${risk_colored}"
     echo "  Evidence:"
 
@@ -467,10 +513,6 @@ check_npm() {
     print_line "npm" "SKIPPED" "npm not installed"
     return 0
   fi
-  if ! have curl; then
-    print_line "npm" "SKIPPED" "curl required for popularity probe"
-    return 0
-  fi
 
   local view_body bins_from_view dl same="NO"
   view_body="$(run_timeout npm view "$name" version bin dist-tags --json 2>/dev/null || true)"
@@ -515,15 +557,14 @@ check_pypi() {
     print_line "PyPI" "SKIPPED" "pip not available for python3"
     return 0
   fi
-  if ! have curl; then
-    print_line "PyPI" "SKIPPED" "curl required for existence/popularity probe"
-    return 0
-  fi
 
-  # Existence probe (fast)
-  if ! run_timeout curl -fsS "https://pypi.org/pypi/${name}/json" >/dev/null 2>&1; then
-    print_line "PyPI" "CLEAR" "package not found"
-    return 0
+  # Existence probe (fast) when curl is available.
+  # If curl is unavailable, continue and rely on wheel/install probes.
+  if have curl; then
+    if ! run_timeout curl -fsS "https://pypi.org/pypi/${name}/json" >/dev/null 2>&1; then
+      print_line "PyPI" "CLEAR" "package not found"
+      return 0
+    fi
   fi
 
   # Fast path: inspect console scripts from wheel metadata first.
@@ -711,7 +752,9 @@ main() {
 
     print_h1 "$n"
     run_check_with_progress "Homebrew" check_brew "$n"
-    run_check_with_progress "APT" check_apt "$n"
+    run_check_with_progress "apt-file" check_apt_file "$n"
+    run_check_with_progress "dnf" check_dnf "$n"
+    run_check_with_progress "winget" check_winget "$n"
     run_check_with_progress "npm" check_npm "$n"
     run_check_with_progress "PyPI" check_pypi "$n"
     print_verdict

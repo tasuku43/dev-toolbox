@@ -3,6 +3,7 @@ FROM debian:bookworm-slim
 ARG DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
+  apt-file \
   bash \
   ca-certificates \
   coreutils \
@@ -39,11 +40,10 @@ ENV PATH=/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:${PATH}
 WORKDIR /work
 
 COPY --chown=auditor:auditor name-audit /usr/local/bin/name-audit
+COPY --chown=auditor:auditor docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/name-audit
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 USER auditor
 
-# Prime core formula metadata during build so runtime checks are fast and consistent.
-RUN brew update --force --quiet || true
-
-ENTRYPOINT ["name-audit"]
+ENTRYPOINT ["docker-entrypoint.sh"]

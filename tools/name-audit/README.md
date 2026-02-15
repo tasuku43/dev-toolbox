@@ -49,6 +49,13 @@ Run with names passed directly as arguments:
 docker run --rm name-audit <candidate-name> <candidate-name>
 ```
 
+At container start, metadata is refreshed (`brew update`, `apt-file update`) to avoid stale cache from old image builds.
+If you prefer lower latency, disable refresh per run:
+
+```bash
+docker run --rm -e NAME_AUDIT_REFRESH=0 name-audit <candidate-name>
+```
+
 ## Optional: AI-assisted review
 
 After running `name-audit`, you can ask an LLM tool (for example Codex CLI or Claude Code) for additional naming feedback.
@@ -152,6 +159,7 @@ CONTEXT:
 ## Notes
 
 - Network access is required for npm/PyPI popularity checks.
+- Runtime metadata refresh (`brew update`, `apt-file update`) also needs network access.
 - Some checks are OS-dependent and may be `SKIPPED` (for example `winget` on non-Windows, `dnf` on non-Fedora).
 - `apt-file` results depend on local apt-file index freshness.
 - Progress output is shown during checks (`Checking ...`) with elapsed time.

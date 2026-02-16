@@ -30,13 +30,33 @@ So I wanted something predictable:
 
 ## Usage with Claude Code
 
-Add this to `~/.claude/settings.json` (or `.claude/settings.local.json`):
+Set `fileSuggestion.command` to a real executable script path in `~/.claude/settings.json` (or `.claude/settings.local.json`).
+
+You have two common options:
+
+1. Copy/symlink this script into `~/.claude/` and reference that path.
+2. Keep it in your cloned repository and reference the absolute path directly.
+
+### Option 1: place it under `~/.claude/`
 
 ```json
 {
   "fileSuggestion": {
     "type": "command",
     "command": "~/.claude/file-suggestion-bfs.sh"
+  }
+}
+````
+
+### Option 2: use the script from your cloned repo
+
+Example:
+
+```json
+{
+  "fileSuggestion": {
+    "type": "command",
+    "command": "/absolute/path/to/dev-toolbox/tools/claude-file-suggestion-bfs/file-suggestion-bfs"
   }
 }
 ````

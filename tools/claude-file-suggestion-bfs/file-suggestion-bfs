@@ -1,0 +1,73 @@
+#!/bin/sh
+# Exit immediately if any command fails (`-e`) or if an unset variable is used (`-u`).
+set -eu
+
+# Use CLAUDE_PROJECT_DIR as the search root when available; otherwise use the current directory.
+ROOT="${CLAUDE_PROJECT_DIR:-$PWD}"
+# Read JSON input from stdin and extract `.query`; fallback to an empty string when missing/null.
+query="$(cat | jq -r '.query // ""')"
+
+# Normalize the query by lowercasing it and removing non-alphanumeric characters.
+qnorm="$(printf "%s" "$query" | tr '[:upper:]' '[:lower:]' | tr -cd '[:alnum:]')"
+
+# Traverse files under ROOT in breadth-first order.
+bfs "$ROOT" \
+  # Exclude VCS metadata and common dependency/virtualenv directories from traversal.
+  -exclude -name .git -exclude -name node_modules -exclude -name .venv \
+  # Keep only regular files.
+  -type f \
+  # Suppress traversal errors (e.g., permission-denied paths).
+  2>/dev/null |
+  # Strip the absolute ROOT prefix so output paths are project-relative.
+  sed "s|^$ROOT/||" |
+  # Filter paths using normalized subsequence matching against the normalized query.
+  awk -v q="$qnorm" '
+    # Normalize a path string: lowercase + remove non-alphanumeric characters.
+    function norm(s) {
+      # Convert to lowercase for case-insensitive matching.
+      s = tolower(s)
+      # Remove separators/symbols so only alphanumeric characters remain.
+      gsub(/[^[:alnum:]]+/, "", s)
+      # Return the normalized string.
+      return s
+    }
+
+    # Return true when every character in q appears in s in order (subsequence match).
+    function is_subseq(s, q,    i, j, cs, cq) {
+      # Empty query matches everything.
+      if (q == "") return 1
+      # Start matching from the first character in q.
+      i = 1
+      # Scan s left-to-right until either s ends or all query chars are matched.
+      for (j = 1; j <= length(s) && i <= length(q); j++) {
+        # Current character from normalized path.
+        cs = substr(s, j, 1)
+        # Current character we still need to match from normalized query.
+        cq = substr(q, i, 1)
+        # Advance query pointer when characters match.
+        if (cs == cq) i++
+      }
+      # True only if all characters in q were consumed.
+      return (i > length(q))
+    }
+
+    # Initialize printed-match counter.
+    BEGIN { n = 0 }
+    # Process each candidate path line.
+    {
+      # Raw relative path from stdin.
+      p = $0
+      # Normalized version used for matching.
+      s = norm(p)
+
+      # If normalized path matches normalized query by subsequence...
+      if (is_subseq(s, q)) {
+        # Emit the original relative path.
+        print p
+        # Increment the number of emitted matches.
+        n++
+        # Stop early after 15 matches.
+        if (n >= 15) exit
+      }
+    }
+  '

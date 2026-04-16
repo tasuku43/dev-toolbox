@@ -2,6 +2,15 @@
 
 A tiny `sh` script that powers Claude Code’s `@` file/path completion using **pure BFS** over the filesystem.
 
+> [!CAUTION]
+> **This tool may no longer be necessary.** It was written when `@` completion in Claude Code felt “Git-shaped” and misbehaved outside Git repos / under nested layouts. Since then, the built-in behavior appears to have changed:
+>
+> - The current docs describe the built-in file suggestion as **“fast filesystem traversal”**.
+> - The public changelog shows `fileSuggestion` setting was added in **v2.0.65**, and **v2.0.72** improved `@` mention file suggestion speed (~3x faster in git repositories) — the most likely switch-over point.
+> - Issues from late 2025 discuss behavior consistent with a filesystem-traversal implementation (e.g. nested `.git` being treated as repo boundaries).
+>
+> None of the release notes explicitly state “switched from `git ls-files` to filesystem traversal,” so this is circumstantial. But on recent Claude Code versions, the built-in completion is likely good enough for most cases, and this script is kept here mostly for historical reference / as a fallback when you want a fully predictable, Git-independent walker.
+
 ## Why
 
 I ran into cases where `@` completion felt “Git-shaped” (likely tied to `.git` context), which caused surprising behavior when:
